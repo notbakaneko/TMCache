@@ -464,22 +464,20 @@ NSString * const TMMemoryCachePrefix = @"com.tumblr.TMMemoryCache";
     if (!key)
         return nil;
 
-    __block id objectForKey = nil;
+    NSDate *now = [[NSDate alloc] init];
 
-    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    id object = [self->_dictionary objectForKey:key];
 
-    [self objectForKey:key block:^(TMMemoryCache *cache, NSString *key, id object) {
-        objectForKey = object;
-        dispatch_semaphore_signal(semaphore);
-    }];
+    if (object) {
+        __weak TMMemoryCache *weakSelf = self;
+        dispatch_barrier_async(self->_queue, ^{
+            TMMemoryCache *strongSelf = weakSelf;
+            if (strongSelf)
+                [strongSelf->_dates setObject:now forKey:key];
+        });
+    }
 
-    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
-
-    #if !OS_OBJECT_USE_OBJC
-    dispatch_release(semaphore);
-    #endif
-
-    return objectForKey;
+    return object;
 }
 
 - (void)setObject:(id)object forKey:(NSString *)key
@@ -489,38 +487,33 @@ NSString * const TMMemoryCachePrefix = @"com.tumblr.TMMemoryCache";
 
 - (void)setObject:(id)object forKey:(NSString *)key withCost:(NSUInteger)cost
 {
-    if (!object || !key)
+    if (!key || !object)
         return;
 
-    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    NSDate *now = [[NSDate alloc] init];
 
-    [self setObject:object forKey:key withCost:cost block:^(TMMemoryCache *cache, NSString *key, id object) {
-        dispatch_semaphore_signal(semaphore);
-    }];
+    if (self->_willAddObjectBlock)
+        self->_willAddObjectBlock(self, key, object);
 
-    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+    [self->_dictionary setObject:object forKey:key];
+    [self->_dates setObject:now forKey:key];
+    [self->_costs setObject:@(cost) forKey:key];
 
-    #if !OS_OBJECT_USE_OBJC
-    dispatch_release(semaphore);
-    #endif
+    _totalCost += cost;
+
+    if (self->_didAddObjectBlock)
+        self->_didAddObjectBlock(self, key, object);
+
+    if (self->_costLimit > 0)
+        [self trimToCostByDate:self->_costLimit block:nil];
 }
 
 - (void)removeObjectForKey:(NSString *)key
 {
     if (!key)
         return;
-    
-    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
 
-    [self removeObjectForKey:key block:^(TMMemoryCache *cache, NSString *key, id object) {
-        dispatch_semaphore_signal(semaphore);
-    }];
-
-    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
-
-    #if !OS_OBJECT_USE_OBJC
-    dispatch_release(semaphore);
-    #endif
+    [self removeObjectAndExecuteBlocksForKey:key];
 }
 
 - (void)trimToDate:(NSDate *)date
